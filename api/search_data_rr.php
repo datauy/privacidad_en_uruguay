@@ -352,26 +352,30 @@ function parse_html($html,&$elements,$mustConvertStringToHtmlObject=false){
     $html = str_get_html($html);
   }
   // Fetch child of the current element (one by one)
-  foreach ($html->find('*') as $child) {
-    if(!isset($elements[$child->tag] )){
-      $elements[$child->tag] = array();
-    }
-    $item = parse_element($child);
-    array_push($elements[$child->tag],$item);
-    if(count($child->children()>0)){
-      foreach ($child->children() as $subchild) {
-        $elements = parse_html($subchild->outertext,$elements,true);
+  try {
+    foreach ($html->find('*') as $child) {
+      if(!isset($elements[$child->tag] )){
+        $elements[$child->tag] = array();
       }
+      $item = parse_element($child);
+      array_push($elements[$child->tag],$item);
+      if(count($child->children()>0)){
+        foreach ($child->children() as $subchild) {
+          $elements = parse_html($subchild->outertext,$elements,true);
+        }
+      }
+
     }
 
-  }
-
-  $elements["hidden"] = array();
-  foreach ($html->find('input[type=hidden]') as $hidden) {
-    $item = array();
-    $item["value"] = $hidden->value;
-    $item["name"] = $hidden->name;
-    array_push($elements["hidden"],$item);
+    $elements["hidden"] = array();
+    foreach ($html->find('input[type=hidden]') as $hidden) {
+      $item = array();
+      $item["value"] = $hidden->value;
+      $item["name"] = $hidden->name;
+      array_push($elements["hidden"],$item);
+    }
+  } catch (Exception $e) {
+      //echo 'Caught exception: ',  $e->getMessage(), "\n";
   }
 
   return $elements;
