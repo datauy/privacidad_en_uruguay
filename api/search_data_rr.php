@@ -2,11 +2,11 @@
 $dni = $_GET["cedula"];
 $base_index = $_GET["base"];
 $max_request = $_GET["max"];
+include_once "../conf/bases.php";
 
-searchByDNI($dni,$base_index,0,$max_request);
+searchByDNI($dni,$base_index,0,$max_request,$bases);
 
-function searchByDNI($dni,$base_index,$request_number,$max_request){
-  include_once "../conf/bases.php";
+function searchByDNI($dni,$base_index,$request_number,$max_request,$bases){
   include_once '../lib/simple_html_dom/simple_html_dom.php';
   $captchedBases = array();
   $base = $bases[$base_index];
@@ -51,7 +51,7 @@ function searchByDNI($dni,$base_index,$request_number,$max_request){
   }else{
     $request_number += 1;
     if($request_number<$max_request){
-      searchByDNI($dni,$base_index,$request_number,$max_request);
+      searchByDNI($dni,$base_index,$request_number,$max_request,$bases);
     }else{
       print($jsonOutput);
     }
@@ -316,8 +316,8 @@ function requestHTMLWithoutAuthenticationCurl(&$base, $init = true, $close = tru
   curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 1);
   curl_setopt($ch, CURLOPT_HEADER, 1);
   curl_setopt($ch, CURLOPT_VERBOSE, 1);
-  $f = fopen('/tmp/log.txt', 'w'); // file to write request header for debug purpose
-  curl_setopt($ch, CURLOPT_STDERR, $f);
+  //$f = fopen('/tmp/log.txt', 'w'); // file to write request header for debug purpose
+  //curl_setopt($ch, CURLOPT_STDERR, $f);
   curl_setopt($ch, CURLOPT_HTTPHEADER, array(
   'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
   'Accept-Encoding:gzip, deflate, br',
@@ -353,27 +353,29 @@ function parse_html($html,&$elements,$mustConvertStringToHtmlObject=false){
   }
   // Fetch child of the current element (one by one)
   try {
-    foreach ($html->find('*') as $child) {
-      if(!isset($elements[$child->tag] )){
-        $elements[$child->tag] = array();
-      }
-      $item = parse_element($child);
-      array_push($elements[$child->tag],$item);
-      if(count($child->children()>0)){
-        foreach ($child->children() as $subchild) {
-          $elements = parse_html($subchild->outertext,$elements,true);
+    if($html!=false){
+      foreach ($html->find('*') as $child) {
+        if(!isset($elements[$child->tag] )){
+          $elements[$child->tag] = array();
         }
+        $item = parse_element($child);
+        array_push($elements[$child->tag],$item);
+        if(count($child->children()>0)){
+          foreach ($child->children() as $subchild) {
+            $elements = parse_html($subchild->outertext,$elements,true);
+          }
+        }
+
       }
 
-    }
-
-    $elements["hidden"] = array();
-    foreach ($html->find('input[type=hidden]') as $hidden) {
-      $item = array();
-      $item["value"] = $hidden->value;
-      $item["name"] = $hidden->name;
-      array_push($elements["hidden"],$item);
-    }
+      $elements["hidden"] = array();
+      foreach ($html->find('input[type=hidden]') as $hidden) {
+        $item = array();
+        $item["value"] = $hidden->value;
+        $item["name"] = $hidden->name;
+        array_push($elements["hidden"],$item);
+      }
+    }  
   } catch (Exception $e) {
       //echo 'Caught exception: ',  $e->getMessage(), "\n";
   }
