@@ -44,7 +44,7 @@ function searchByDNI($dni,$base_index,$request_number,$max_request,$bases){
   }else{
     $base = requestAndScrapBase($base,true,true);
   }
-  $formatedBaseOutput = formatOutput($base);
+  $formatedBaseOutput = formatOutput($base,$request_number);
   $jsonOutput = json_encode($formatedBaseOutput);
   if($formatedBaseOutput["requestSuccessfull"]==true){
     print($jsonOutput);
@@ -122,7 +122,7 @@ function grab_image($url,$saveto,&$base){
     fclose($fp);
 }
 
-function formatOutput($base){
+function formatOutput($base,$request_number){
   $output = "";
   $requestSuccessfull = false;
   $status = "RequestFail";
@@ -176,7 +176,8 @@ function formatOutput($base){
   $output = array(
               "html" => $html,
               "requestSuccessfull" => $requestSuccessfull,
-              "status" => $status
+              "status" => $status,
+              "countOfRequests" => $request_number
             );
   return $output;
 }
@@ -375,7 +376,7 @@ function parse_html($html,&$elements,$mustConvertStringToHtmlObject=false){
         $item["name"] = $hidden->name;
         array_push($elements["hidden"],$item);
       }
-    }  
+    }
   } catch (Exception $e) {
       //echo 'Caught exception: ',  $e->getMessage(), "\n";
   }
