@@ -91,7 +91,7 @@ $bases = array(
   ),
 
   /*array(
-    "name" => "UdelaR (bedelías) - Inscripciones actuales - agronomia",
+    "name" => "UdelaR - Agronomía",
     "url" => "http://www2.bedelias.edu.uy/agronomia/muestra_ic.impr_ie",
     "requestObject" => array(
                       'http' => array(
@@ -104,8 +104,30 @@ $bases = array(
                                       ),
                                   ),
                       ),
+    "long_name" => "UdelaR - Inscripciones actuales - Agronomía",
+    "document_not_found_txt" => "El documento ingresado no se encuentra en la Central de Riesgos",
+    "no_data_for_period_txt" => "No hay info. de la Central de Riesgos para este periodo",
+    "limit_reached_txt" => "Usted excedio el TOPE de consultas diarias",
+    "captcha_failed_txt" => "La palabra ingresada es incorrecta",
+    "forceCaptcha" => false,
+    "interesting_data" => array(
+                          "ids" => array("datoejemplo1"),
+                          "special_data" => array(
+                                                  array(
+                                                      "simpleHtmlDom_ParentQuery" => "td.claseejemplo1",
+                                                      "simpleHtmlDom_ParentIndex" => 0,
+                                                      "simpleHtmlDom_ChildQuery" => false,
+                                                      "simpleHtmlDom_ChildIndex" => false,
+                                                      "keyInsideArray" => "Nombre",
+                                                      "groupBy" => "Persona",
+                                                      "groupType" => "datosPersonales"
+                                                    ),
+                                                  ),
+                         ),
   ),
 
+
+  
   array(
     "name" => "UdelaR (bedelías) - Historial de inscripciones - agronomia",
     "url" => "http://www1.bedelias.edu.uy/agronomia/control_ic.impr_ic",

@@ -1,17 +1,46 @@
 <?php
-$dni = $_GET["cedula"];
-$base_index = $_GET["base"];
-$max_request = $_GET["max"];
+$dni = $argv[1];//$_GET["cedula"];
+$base_index = 0;//$_GET["base"];
+$max_request = 10;//$_GET["max"];
 include_once "../conf/bases.php";
 
-searchByDNI($dni,$base_index,0,$max_request,$bases);
+searchByDNI($dni,$base_index,0,$max_request,$bases, 0);
 
-function searchByDNI($dni,$base_index,$request_number,$max_request,$bases){
+function searchByDNI($dni,$base_index,$request_number,$max_request,$bases,$user_index){
   include_once '../lib/simple_html_dom/simple_html_dom.php';
   $captchedBases = array();
   $base = $bases[$base_index];
+  $memcache = new Memcache;
+  $memcache->connect('localhost', 11211) or die ("Could not connect");
+  $userAvailable = false;
+  $allUsersUnavailable = false;
+  while ($userAvailable == false && $allUsersUnavailable == false) {
+    $user_id_key = "base_".$base_index."user_".$user_index;
+    $unavailable_user_id = $memcache->get($user_id_key);
+    if($unavailable_user_id==false){
+      //Esta disponible ese usuario
+      $userAvailable = true;
+    }else{
+      //El usuario ya llegó al límite, pruebo con otro
+      $user_index += 1;
+      if($user_index == count($base["authentication"]["params"])){
+        //Ya llegué al último usuario, salgo del loop y devuelvo que no hay usuarios disponibles.
+        $allUsersUnavailable = true;
+      }
+    }
+  }
+  if($allUsersUnavailable==true){
+    $output = array(
+            "html" => "TODOS LOS USUARIOS DISPONIBLES PARA ESA BASE LLEGARON AL LIMITE",
+            "requestSuccessfull" => true,
+            "status" => "allUsersLimitReached",
+            "countOfRequests" => $request_number
+          );
+    $memcache->set($dni, $output, 0, 900);
+    return;
+  }
   if(isset($base["forceCaptcha"])){
-    $base = requestAndScrapBase($base,true,false,$base["preCaptchaURL"],$base["preCaptchaMethod"],"");
+    $base = requestAndScrapBase($base,true,false,$base["preCaptchaURL"],$base["preCaptchaMethod"],"",$user_index);
     //REQUIERE CAPTCHA
     $captchaSource = null;
     foreach ($base["htmlElements"]["img"] as $imgKey => $imgArray){
@@ -21,11 +50,13 @@ function searchByDNI($dni,$base_index,$request_number,$max_request,$bases){
     }
     if($captchaSource){
       $captchaURL = $base["captchaUrlPrefix"].$captchaSource;
-      grab_image($captchaURL,"/home/datauy/vigilanciaenuruguay/tempCaptchas/captchaTemp.jpg",$base);
+      //Get path for concurrency
+      $img_path = "/home/datauy/vigilanciaenuruguay/tempCaptchas/";
+      $base["captchaImageUrl"] = grab_image($captchaURL,$img_path,$base);
       $captchaResolved = null;
-      $captchaResolved = shell_exec('/home/datauy/vigilanciaenuruguay/parseCaptcha.sh');
+      $captchaResolved = shell_exec('tesseract '.$base["captchaImageUrl"].' stdout -psm 7 -l eng');
       $captchaResolved = strtolower(clean($captchaResolved));
-      //print_r("CAPTCHA: ".$captchaResolved);
+      print_r("CAPTCHA: ".$base["captchaImageUrl"].' --> '.$captchaResolved);
       $base["captchaResolvedValue"] = $captchaResolved;
       $base["params"][$base["captchaParamName"]] = $captchaResolved;
       if(isset($captchaResolved)){
@@ -38,43 +69,59 @@ function searchByDNI($dni,$base_index,$request_number,$max_request,$bases){
         array_push($captchedBases,$base);
         //print_r($base);
         $base["authenticationComplete"] = true;
-        $base = requestAndScrapBase($base,false,true,null,null,$base["params"]);
+        $base = requestAndScrapBase($base,false,true,null,null,$base["params"],$user_index);
+        print "\nTermina CAPTCHA Request and Scrap\n";
       }
+      print "\nTermina CAPTCHA Source\n";
     }
   }else{
     $base = requestAndScrapBase($base,true,true);
   }
   $formatedBaseOutput = formatOutput($base,$request_number);
-  $jsonOutput = json_encode($formatedBaseOutput);
+  print "\n";
+  print_r($formatedBaseOutput);
+  print "\n\n";
   if($formatedBaseOutput["requestSuccessfull"]==true){
-    print($jsonOutput);
+    if($formatedBaseOutput["status"]=="BaseLimitReached"){
+      $memcache->set($user_id_key, "unavailable", 0, 4000);
+      searchByDNI($dni,$base_index,$request_number,$max_request,$bases,$user_index);
+    }else{
+      $memcache->set($dni, $formatedBaseOutput, 0, 900);
+    }
   }else{
     $request_number += 1;
     if($request_number<$max_request){
-      searchByDNI($dni,$base_index,$request_number,$max_request,$bases);
+      searchByDNI($dni,$base_index,$request_number,$max_request,$bases,$user_index);
     }else{
-      print($jsonOutput);
+      $memcache->set($dni, $formatedBaseOutput, 0, 900);
     }
   }
-
+  //Borro el archivo con la cookie de este request
+  if (file_exists($base["cookie_file"])){
+    unlink($base["cookie_file"]);
+  }
 }
 
-function requestAndScrapBase(&$base,$init=true,$close=true,$url=null,$method=null,$parms=null){
-  $html = getRequestHTML($base,$init,$close,$url,$method,$parms);
+function requestAndScrapBase(&$base,$init=true,$close=true,$url=null,$method=null,$parms=null,$user_index=0){
+  $html = getRequestHTML($base,$init,$close,$url,$method,$parms,$user_index);
   $htmlElements = array();
   $htmlElements = parse_html($html,$htmlElements,false);
+  $htmlElements = parse_specialElements($base,$html,$htmlElements,false);
   $base["htmlElements"] = $htmlElements;
   return $base;
 }
 
-function getRequestHTML(&$base,$init=true,$close=true,$url=null,$method=null,$parms=null){
+function getRequestHTML(&$base,$init=true,$close=true,$url=null,$method=null,$parms=null,$user_index=0){
   $html = null;
   $htmlString = null;
   if(isset($base["authenticationComplete"])){
     $htmlString = requestHTMLAuthenticationComplete($base,true,true);
+    if($base["response_charset"]=="ISO-8859-1"){
+      $htmlString = utf8_encode($htmlString);
+    }
     $html = str_get_html($htmlString);
   }else if(isset($base["authentication"])){
-    $htmlString = requestHTMLWithAuthentication($base,$init,$close,$url,$method,$parms);
+    $htmlString = requestHTMLWithAuthentication($base,$init,$close,$url,$method,$parms,$user_index);
     $html = str_get_html($htmlString);
   }else{
     //$html = requestHTMLWithoutAuthentication($base);
@@ -91,14 +138,19 @@ function clean($string) {
   return $string;
 }
 
-function grab_image($url,$saveto,&$base){
+function cleanStrangeChars($string){
+  $string = str_replace('&nbsp;', ' ', $string);
+  return $string;
+}
+
+function grab_image($url,$savetoPath,&$base){
     if(isset($base["curlChannel"])){
       $ch = $base["curlChannel"];
       $ch = curl_init();
     }else{
       $ch = curl_init();
     }
-    $cookie_file="/home/datauy/vigilanciaenuruguay/tempCookies/cookie.txt";
+    $cookie_file = $base["cookie_file"];
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.8.1.2) Gecko/20070219 Firefox/2.0.0.2');
     curl_setopt($ch, CURLOPT_HEADER, 0);
@@ -114,18 +166,27 @@ function grab_image($url,$saveto,&$base){
       $ch = $base["curlChannel"];*/
       curl_close ($ch);
 //    }
-    if(file_exists($saveto)){
-        unlink($saveto);
+    // Hacer while por concurrencia
+    $foundValidFileName = false;
+    $filename="";
+    while ($foundValidFileName!=true) {
+     $filename = uniqid('captcha', true) . '.jpg';
+     if (!file_exists($savetoPath . $filename)){
+       $foundValidFileName = true;
+     }
     }
-    $fp = fopen($saveto,'x');
+    $fullFileURL = $savetoPath . $filename;
+    $fp = fopen($fullFileURL,'x');
     fwrite($fp, $raw);
     fclose($fp);
+    return $fullFileURL;
 }
 
 function formatOutput($base,$request_number){
   $output = "";
   $requestSuccessfull = false;
   $status = "RequestFail";
+  $special_data = array();
   $html = "<fieldset><p>Según ".$base["long_name"].": </p>";
   $html .= "<table><tbody>";
   //print_r($base["html_answer"]);
@@ -134,7 +195,13 @@ function formatOutput($base,$request_number){
     $requestSuccessfull = true;
     $html .= "<tr><td>".$base["document_not_found_txt"]."</td></tr>";
     $status = "DocumentNotFoundInBase";
+  }else if (strpos($base["html_answer"], $base["no_data_for_period_txt"]) !== false) {
+    //Funcionó la consulta, pero no existen datos para ese período
+    $requestSuccessfull = true;
+    $html .= "<tr><td>".$base["no_data_for_period_txt"]."</td></tr>";
+    $status = "NoDataForSelectedPeriod";
   }else if (strpos($base["html_answer"], $base["limit_reached_txt"]) !== false) {
+    //Hacer esto está diferente del original que pregunta por limit_reached_txt
     //Funcionó la consulta, pero el servidor nos bloqueó por límite de consultas
     $requestSuccessfull = true;
     $html .= "<tr><td>".$base["limit_reached_txt"]."</td></tr>";
@@ -148,23 +215,31 @@ function formatOutput($base,$request_number){
   foreach ($base["htmlElements"] as $tag => $tagItems){
     if($tag != "br" && $tag != "script" && $tag != "noscript" && $tag != "meta"){
       foreach ($tagItems as $item){
-        if ( isset($item["id"]) ){
-          $id = $item["id"];
-          $idsWanted = $base["interesting_data"]["ids"];
-          if(in_array($id,$idsWanted)){
-            $requestSuccessfull = true;
-            $status = "DataRetrieved";
-            if(isset($item["plaintext"])&&$item["plaintext"]!=""){
-              $html .= "<tr><td>".$item["plaintext"]."</td></tr>";
-            }
-            if(isset($item["htmltext"])&&$item["htmltext"]!=""){
-                $html .= "<tr><td>".$item["htmltext"]."</td></tr>";
-            }
-            if($tag=="img"&&$item["src"]!=""){
-              $html .= "<tr><td>".$item["src"]."</td></tr>";
-            }
-            if($tag=="hidden"){
-              $html .= "<tr><td>".$item["value"]."</td></tr>";
+        if($tag=="special_data"){
+          $special_item = $item["value"];
+          if(isset($item["tipo"])){
+            $special_item["tipo"] = $item["tipo"];
+          }
+          array_push($special_data,$special_item);
+        }else{
+          if ( isset($item["id"]) ){
+            $id = $item["id"];
+            $idsWanted = $base["interesting_data"]["ids"];
+            if(in_array($id,$idsWanted)){
+              $requestSuccessfull = true;
+              $status = "DataRetrieved";
+              if(isset($item["plaintext"])&&$item["plaintext"]!=""){
+                $html .= "<tr><td>".$item["plaintext"]."</td></tr>";
+              }
+              if(isset($item["htmltext"])&&$item["htmltext"]!=""){
+                  $html .= "<tr><td>".$item["htmltext"]."</td></tr>";
+              }
+              if($tag=="img"&&$item["src"]!=""){
+                $html .= "<tr><td>".$item["src"]."</td></tr>";
+              }
+              if($tag=="hidden"){
+                $html .= "<tr><td>".$item["value"]."</td></tr>";
+              }
             }
           }
         }
@@ -174,10 +249,11 @@ function formatOutput($base,$request_number){
   $html .= "</tbody></table>";
   $html .= "</fieldset>";
   $output = array(
-              "html" => $html,
+              //"html" => $html,
               "requestSuccessfull" => $requestSuccessfull,
               "status" => $status,
-              "countOfRequests" => $request_number
+              "countOfRequests" => $request_number+1,
+              "special_data" => $special_data
             );
   return $output;
 }
@@ -196,7 +272,7 @@ function requestHTMLWithoutAuthentication(&$base){
 
 function requestHTMLAuthenticationComplete(&$base, $init = false, $close = true){
   $html = null;
-  $cookie_file = "/home/datauy/vigilanciaenuruguay/tempCookies/cookie.txt";
+  $cookie_file = $base["cookie_file"];
   $ch;
   if($init==true){
       $ch = curl_init();
@@ -227,10 +303,18 @@ function requestHTMLAuthenticationComplete(&$base, $init = false, $close = true)
   return $html;
 }
 
-function requestHTMLWithAuthentication(&$base, $init = true, $close = true, $url=null,$method=null,$parms=null){
+function requestHTMLWithAuthentication(&$base, $init = true, $close = true, $url=null,$method=null,$parms=null,$user_index=0){
   $html = null;
-  $cookie_file = "/home/datauy/vigilanciaenuruguay/tempCookies/cookie.txt";
-  unlink($cookie_file);
+  $foundValidFileName = false;
+  $filename="";
+  while (!$foundValidFileName) {
+   $filename = uniqid('cookie', true) . '.txt';
+   if (!file_exists("/home/datauy/vigilanciaenuruguay/tempCookies/" . $filename)){
+     $foundValidFileName = true;
+   }
+  }
+  $cookie_file = "/home/datauy/vigilanciaenuruguay/tempCookies/".$filename;
+  $base["cookie_file"] = $cookie_file;
   global $ch;
   if($init==true){
       $ch = curl_init();
@@ -238,9 +322,9 @@ function requestHTMLWithAuthentication(&$base, $init = true, $close = true, $url
   if($base["authentication"]["method"]=='POST'){
     curl_setopt($ch, CURLOPT_URL, $base["authentication"]["url"] );
     curl_setopt($ch, CURLOPT_POST, TRUE);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($base["authentication"]["params"]));
+    curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($base["authentication"]["params"][$user_index]));
   }else{
-    curl_setopt($ch, CURLOPT_URL, $base["authentication"]["url"]."?".http_build_query($base["authentication"]["params"]) );
+    curl_setopt($ch, CURLOPT_URL, $base["authentication"]["url"]."?".http_build_query($base["authentication"]["params"][$user_index]) );
     curl_setopt($ch, CURLOPT_POST, FALSE);
   }
   curl_setopt($ch, CURLOPT_RETURNTRANSFER, TRUE);
@@ -254,10 +338,10 @@ function requestHTMLWithAuthentication(&$base, $init = true, $close = true, $url
   if($base["forceCaptcha"]==true){
     curl_close($ch);
     $base["curlChannel"] = $ch;
-    $CookieContent = file_get_contents("/home/datauy/vigilanciaenuruguay/tempCookies/cookie.txt");
+    /*$CookieContent = file_get_contents("/home/datauy/vigilanciaenuruguay/tempCookies/cookie.txt");
     $cookieArray = explode("JSESSIONID",$CookieContent);
     $JSESSIONID = trim($cookieArray[1]);
-    $base["JSESSIONID"]=$JSESSIONID;
+    $base["JSESSIONID"]=$JSESSIONID;*/
     return $login_response;
   }
 
@@ -296,7 +380,16 @@ function requestHTMLWithoutAuthenticationCurl(&$base, $init = true, $close = tru
   }
   //print_r($content);
   $html = null;
-  $cookie_file = "/home/datauy/vigilanciaenuruguay/tempCookies/cookie.txt";
+  $foundValidFileName = false;
+  $filename="";
+  while (!$foundValidFileName) {
+   $filename = uniqid('cookie', true) . '.txt';
+   if (!file_exists("/home/datauy/vigilanciaenuruguay/tempCookies/" . $filename)){
+     $foundValidFileName = true;
+   }
+  }
+  $cookie_file = "/home/datauy/vigilanciaenuruguay/tempCookies/".$filename;
+  $base["cookie_file"] = $cookie_file;
   global $ch;
   if($init==true){
       $ch = curl_init();
@@ -312,38 +405,88 @@ function requestHTMLWithoutAuthenticationCurl(&$base, $init = true, $close = tru
   curl_setopt($ch, CURLOPT_RETURNTRANSFER, TRUE);
   curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.8.1.2) Gecko/20070219 Firefox/2.0.0.2');
   curl_setopt($ch, CURLOPT_COOKIEJAR, $cookie_file);
-  curl_setopt($ch, CURLOPT_COOKIEFILE, $cookie_file);
   curl_setopt($ch, CURLOPT_REFERER, $request_url);
   curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 1);
   curl_setopt($ch, CURLOPT_HEADER, 1);
-  curl_setopt($ch, CURLOPT_VERBOSE, 1);
-  //$f = fopen('/tmp/log.txt', 'w'); // file to write request header for debug purpose
-  //curl_setopt($ch, CURLOPT_STDERR, $f);
-  curl_setopt($ch, CURLOPT_HTTPHEADER, array(
-  'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-  'Accept-Encoding:gzip, deflate, br',
-  'Accept-Language:es-419,es;q=0.8,en-GB;q=0.6,en;q=0.4,pt-BR;q=0.2,pt;q=0.2',
-  'Cache-Control:no-cache',
-  'Connection:keep-alive',
-  'Content-Type:application/x-www-form-urlencoded',
-  'Origin:https://feclugcob.bps.gub.uy',
-  'Pragma:no-cache',
-  'Upgrade-Insecure-Requests:1'
-));
-  //curl_setopt($ch, CURLOPT_HEADER, false);
 
   $html = curl_exec($ch); //Hago el request con la misma cookie
-
-  //print_r($html);
-
   if($close==true){
     curl_close($ch);
-  }/*else{
-    $base["curlChannel"] = $ch;
-  }*/
+  }
   return $html;
 }
 
+function parse_specialElements(&$base,$html,&$elements,$mustConvertStringToHtmlObject=false){
+  if(!isset($elements)){
+    $elements = array();
+  }
+  if($mustConvertStringToHtmlObject){
+    $html = str_get_html($html);
+  }
+  if($html!=false){
+    if(isset($base["interesting_data"]["special_data"])){
+      if(!isset($elements["special_data"] )){
+        $elements["special_data"] = array();
+      }
+      foreach ($base["interesting_data"]["special_data"] as $key => $value) {
+        $element = null;
+        if(isset($value["simpleHtmlDom_ParentQuery"])){
+          $parentIndex = 0;
+          if(isset($value["simpleHtmlDom_ParentIndex"])){
+            $parentIndex = $value["simpleHtmlDom_ParentIndex"];
+          }
+          $parent = $html->find($value["simpleHtmlDom_ParentQuery"])[$parentIndex];
+          //try {
+            if($parent != null && isset($value["simpleHtmlDom_ChildQuery"]) && $value["simpleHtmlDom_ChildQuery"]!=false){
+              $childQuery = $value["simpleHtmlDom_ChildQuery"];
+              $childIndex = $value["simpleHtmlDom_ChildIndex"];
+              $element = $parent->find($childQuery)[$childIndex];
+            }else{
+              $element = $parent;
+            }
+          /*} catch (Exception $e) {
+              echo 'Caught exception: ',  $e->getMessage(), "\n";
+          } */
+        }
+        if($element!=null && $element->plaintext!=null && $element->plaintext != ""){
+          if(isset($value["groupBy"])){
+            $groupName = $value["groupBy"];
+            if(!isset($elements["special_data"][$groupName])){
+              $elements["special_data"][$groupName] = array();
+              $elements["special_data"][$groupName]["keyInsideArray"] = $value["groupBy"];
+              $elements["special_data"][$groupName]["value"] = array();
+              if(isset($value["groupType"])){
+                $elements["special_data"][$groupName]["tipo"] = $value["groupType"];
+              }
+            }
+            /*$item = array(
+              $value["keyInsideArray"] => trim(cleanStrangeChars($element->plaintext))
+            );
+            if(isset($value["html"])&&$value["html"]==true){
+              $item[$value["keyInsideArray"]] = trim(preg_replace('/\t+/', '', $element->innertext));
+            }
+            array_push($elements["special_data"][$groupName]["value"],$item);*/
+            $elements["special_data"][$groupName]["value"][$value["keyInsideArray"]]=trim(cleanStrangeChars($element->plaintext));
+            if(isset($value["html"])&&$value["html"]==true){
+              $elements["special_data"][$groupName]["value"][$value["keyInsideArray"]] = trim(preg_replace('/\t+/', '', $element->innertext));
+            }
+          }else{
+            $item = array(
+              "tag" => "special_data",
+              "keyInsideArray" => $value["keyInsideArray"],
+              "value" => trim(cleanStrangeChars($element->plaintext))
+            );
+            if(isset($value["html"])&&$value["html"]==true){
+              $item["value"] = trim(preg_replace('/\t+/', '', $element->innertext));
+            }
+            array_push($elements["special_data"],$item);
+          }
+        }
+      }
+    }
+  }
+  return $elements;
+}
 
 function parse_html($html,&$elements,$mustConvertStringToHtmlObject=false){
   if(!isset($elements)){
