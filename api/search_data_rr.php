@@ -1,4 +1,7 @@
 <?php
+#error_reporting(E_ALL);
+#ini_set('display_errors', 1);
+
 $dni = $argv[1];//$_GET["cedula"];
 $base_index = 0;//$_GET["base"];
 $max_request = 10;//$_GET["max"];
@@ -84,6 +87,13 @@ function searchByDNI($dni,$base_index,$request_number,$max_request,$bases,$user_
   if($formatedBaseOutput["requestSuccessfull"]==true){
     if($formatedBaseOutput["status"]=="BaseLimitReached"){
       $memcache->set($user_id_key, "unavailable", 0, 4000);
+      searchByDNI($dni,$base_index,$request_number,$max_request,$bases,$user_index);
+    }
+    elseif ($formatedBaseOutput["status"]=="NoDataForSelectedPeriod") {
+      $year = substr($base['params']['periodo'],0,4);
+      print "\n Current year: $year\n";
+      $bases['0']['params']['periodo'] = ($year - 1)."01";
+      $request_number += 1;
       searchByDNI($dni,$base_index,$request_number,$max_request,$bases,$user_index);
     }else{
       $memcache->set($dni, $formatedBaseOutput, 0, 900);
@@ -253,7 +263,8 @@ function formatOutput($base,$request_number){
               "requestSuccessfull" => $requestSuccessfull,
               "status" => $status,
               "countOfRequests" => $request_number+1,
-              "special_data" => $special_data
+              "special_data" => $special_data,
+              "periodo" => $base["params"]["periodo"]
             );
   return $output;
 }
@@ -435,7 +446,7 @@ function parse_specialElements(&$base,$html,&$elements,$mustConvertStringToHtmlO
           if(isset($value["simpleHtmlDom_ParentIndex"])){
             $parentIndex = $value["simpleHtmlDom_ParentIndex"];
           }
-          $parent = $html->find($value["simpleHtmlDom_ParentQuery"])[$parentIndex];
+          $parent = isset($html->find($value["simpleHtmlDom_ParentQuery"])[$parentIndex]) ? $html->find($value["simpleHtmlDom_ParentQuery"])[$parentIndex] : null;
           //try {
             if($parent != null && isset($value["simpleHtmlDom_ChildQuery"]) && $value["simpleHtmlDom_ChildQuery"]!=false){
               $childQuery = $value["simpleHtmlDom_ChildQuery"];
